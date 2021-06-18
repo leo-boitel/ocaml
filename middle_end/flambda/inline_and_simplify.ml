@@ -1044,8 +1044,9 @@ and simplify_named env r (tree : Flambda.named) : Flambda.named * R.t =
                 let approx' = E.really_import_approx env approx in
                 tree, approx'
             in
+            let env, r, is_constructed = R.is_constructed_block env r arg projection in
             let approx =
-              if E.is_constructed_block env arg then
+              if is_constructed then
                 A.augment_with_projection approx projection
               else approx
             in
@@ -1096,7 +1097,8 @@ and simplify_named env r (tree : Flambda.named) : Flambda.named * R.t =
         Misc.fatal_error "Psequand and Psequor must be expanded (see handling \
             in closure_conversion.ml)"
       | Pmakeblock (tag, Immutable, _) as p, args, args_approxs ->
-        begin match E.find_constructed_block env ~tag args with
+        let env, constructed_block = R.find_constructed_block env r ~tag args in
+        begin match constructed_block with
         | Some constructed_var ->
             let approx = E.find_exn env constructed_var in
             Flambda.Expr (Var constructed_var),

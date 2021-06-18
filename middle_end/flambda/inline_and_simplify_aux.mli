@@ -270,15 +270,6 @@ module Env : sig
   val add_constructed_block :
     t -> Flambda.switch_block_key -> Variable.t -> t
 
-  (** Checks is a variable is pointing to a known already constructed immutable
-      block *)
-  val is_constructed_block : t -> Variable.t -> bool
-
-  (** Finds a variable pointing to an already constructed immutable block having
-      the given tag and arguments *)
-  val find_constructed_block :
-    t -> tag:int -> Variable.t list -> Variable.t option
-
 end
 
 module Result : sig
@@ -345,6 +336,19 @@ module Result : sig
 
   val seen_direct_application : t -> t
   val num_direct_applications : t -> int
+  
+  (** Checks is a variable is pointing to a known already constructed immutable
+      block. If not, uses the field_info of the projection to update known
+      constructed blocks in env and r *)
+  val is_constructed_block : Env.t -> t -> Variable.Map.key -> Projection.t 
+                             -> Env.t * t * bool
+
+  (** Updates constructed_blocks of env using the data in t, then 
+      finds a variable pointing to an already constructed immutable block having
+      the given tag and arguments *)
+  val find_constructed_block :
+    Env.t -> t -> tag:int -> Variable.t list -> Env.t * Variable.t option
+
 end
 
 (** Command line argument -inline *)

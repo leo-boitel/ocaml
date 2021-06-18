@@ -237,7 +237,8 @@ and samebinding (v1, n1) (v2, n2) =
 
 and sameswitch (fs1 : Flambda.switch) (fs2 : Flambda.switch) =
   let samecase_const (n1, a1) (n2, a2) = n1 = n2 && same a1 a2 in
-  let samecase_block (k1, a1) (k2, a2) =
+  let samecase_block ((k1 : Flambda.switch_block_key), a1) 
+                     ((k2 : Flambda.switch_block_key), a2) =
     Flambda.(k1.tag = k2.tag && k1.size = k2.size) && same a1 a2
   in
   Numbers.Int.Set.equal fs1.numconsts fs2.numconsts

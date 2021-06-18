@@ -336,6 +336,13 @@ and switch = {
   failaction : t option; (** Action to take if none matched *)
 }
 
+and partial_switch_block_key = {
+  tag : int;
+  size : int;
+  mutable_indexes : int list;
+  (* When out of mutable indexes, can be converted to an immutable switch_block_key *)
+}
+
 (** Equivalent to the similar type in [Lambda]. *)
 and switch_block_key = {
   tag : int;

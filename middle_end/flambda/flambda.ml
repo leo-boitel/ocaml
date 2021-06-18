@@ -143,6 +143,13 @@ and switch_block_key = {
   mutability : Asttypes.mutable_flag;
 }
 
+and partial_switch_block_key = {
+  tag : int;
+  size : int;
+  mutable_indexes : int list;
+  (* When out of mutable indexes, can be converted to an immutable switch_block_key *)
+}
+
 and for_loop = {
   bound_var : Variable.t;
   from_value : Variable.t;

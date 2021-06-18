@@ -46,6 +46,8 @@ module Env = struct
     inlined_debuginfo : Debuginfo.t;
     constructed_blocks : Flambda.switch_block_key Variable.Map.t;
     (* immutable blocks that we shouldn't need to allocate again *)
+    partial_blocks : Flambda.partial_switch_block_key Variable.Map.t;
+    (* blocks that are not proven yet to be immutable because we didn't see all their Pfield *)
   }
 
   let create ~never_inline ~backend ~round ~ppf_dump =
@@ -71,6 +73,7 @@ module Env = struct
         Inlining_stats.Closure_stack.create ();
       inlined_debuginfo = Debuginfo.none;
       constructed_blocks = Variable.Map.empty;
+      partial_blocks = Variable.Map.empty;
     }
 
   let backend t = t.backend
@@ -418,37 +421,6 @@ module Env = struct
                Variable.Map.add var key t.constructed_blocks;
     }
 
-  let is_constructed_block t var =
-    Variable.Map.mem var t.constructed_blocks
-
-  let find_constructed_block t ~tag args =
-    let size = List.length args in
-    let shape_match block_key =
-      block_key.Flambda.size = size && block_key.Flambda.tag = tag
-    in
-    let rec fields_match i args constructed_var =
-      let block_info : Lambda.block_info = { tag; size = Known size; } in
-      match args with
-      | [] -> true
-      | var :: args ->
-          let field_info : Lambda.field_info = { index = i; block_info; } in
-          let projection = Projection.Field (field_info, Reads_agree, constructed_var) in
-          match find_projection t ~projection with
-          | Some v ->
-              Variable.equal v var && fields_match (i + 1) args constructed_var
-          (* FIXME LG: compare the approxs ?*)
-          | _ -> false
-    in
-    let matching_blocks =
-      Variable.Map.filter (fun var block_key ->
-          shape_match block_key && fields_match 0 args var
-        )
-        t.constructed_blocks
-    in
-    match Variable.Map.choose_opt matching_blocks with
-    | None -> None
-    | Some (var, _) -> Some var
-
 end
 
 let initial_inlining_threshold ~round : Inlining_cost.Threshold.t =
@@ -483,6 +455,14 @@ module Result = struct
       inlining_threshold : Inlining_cost.Threshold.t option;
       benefit : Inlining_cost.Benefit.t;
       num_direct_applications : int;
+      (* for blocks we know from field_info on Pfields, we have to store
+      them in Result first to cover more optimisation cases,
+      for example if we make a block directly from projections *)
+      constructed_blocks : Flambda.switch_block_key Variable.Map.t;
+      (* immutable blocks that we shouldn't need to allocate again *)
+      partial_blocks : Flambda.partial_switch_block_key Variable.Map.t;
+      (* blocks that are not proven yet to be immutable because we didn't see all their Pfield *)
+
     }
 
   let create () =
@@ -491,6 +471,8 @@ module Result = struct
       inlining_threshold = None;
       benefit = Inlining_cost.Benefit.zero;
       num_direct_applications = 0;
+      constructed_blocks = Variable.Map.empty;
+      partial_blocks = Variable.Map.empty;
     }
 
   let approx t = t.approx
@@ -552,6 +534,100 @@ module Result = struct
 
   let num_direct_applications t =
     t.num_direct_applications
+
+  let update_partial_block (t : Env.t) r (block : Flambda.partial_switch_block_key) tag size index var = 
+    assert (block.tag = tag && block.size = size);
+    let block = 
+      { block with mutable_indexes = 
+          List.filter (fun x -> x <> index) block.mutable_indexes;
+      } 
+    in 
+    match block.mutable_indexes with
+    | [] -> let block : Flambda.switch_block_key = 
+              { size = block.size; tag = block.tag; mutability = Immutable; }
+            in
+            { t with 
+                partial_blocks = Variable.Map.remove var t.partial_blocks;
+                constructed_blocks = Variable.Map.add var block t.constructed_blocks;
+            },
+            { r with
+                partial_blocks = Variable.Map.remove var r.partial_blocks;
+                constructed_blocks = Variable.Map.add var block r.constructed_blocks;
+            }
+    | _ -> { t with 
+               partial_blocks = Variable.Map.add var block t.partial_blocks;
+           },
+           { r with
+               partial_blocks = Variable.Map.add var block r.partial_blocks;
+           }
+
+  let add_partial_block (t : Env.t) r tag size index var =
+    let block : Flambda.partial_switch_block_key = 
+      { tag; size; mutable_indexes = List.init size (fun x -> x) } 
+    in
+    let t = { t with partial_blocks =
+                Variable.Map.add var block t.partial_blocks;
+    } in
+    let r = { r with partial_blocks =
+                  Variable.Map.add var block r.partial_blocks;
+      } in
+    update_partial_block t r block tag size index var  
+  
+  let apply_field_info (t : Env.t) r var (projection : Projection.t) =
+    let field, sem =
+      match projection with
+      | Field (field, sem, _var) -> field, sem
+      | _ -> Misc.fatal_error "Inline_and_simplify_aux.add_field_info_block"
+    in
+    let block_info = field.block_info in
+    match sem, block_info.size with
+    | Reads_agree, Known size ->
+        begin match Variable.Map.find_opt var t.partial_blocks with
+        | Some block -> update_partial_block t r block block_info.tag size field.index var, true
+        | None -> add_partial_block t r block_info.tag size field.index var, true
+        end
+    | _ -> t, r, false
+
+  let is_constructed_block (t : Env.t) r var projection =
+    if Variable.Map.mem var t.constructed_blocks then t, r, true
+    else apply_field_info t r var projection
+    
+  let find_constructed_block (t : Env.t) r ~tag args =
+    let t = { t with 
+                constructed_blocks = Variable.Map.union 
+                (fun _ -> Misc.fatal_error "Inline_and_simplify_aux.find_constructed_block - mismatch in information on constructed blocks")
+                                    t.constructed_blocks r.constructed_blocks;
+                partial_blocks = Variable.Map.union (fun _ _tb rb -> Some rb)
+                                    t.partial_blocks r.partial_blocks;
+                (* In case of conflict in partial_blocks, r contains more recent data*)
+              } in
+    let size = List.length args in
+    let shape_match (block_key : Flambda.switch_block_key) =
+      block_key.Flambda.size = size && block_key.Flambda.tag = tag
+    in
+    let rec fields_match i args constructed_var =
+      let block_info : Lambda.block_info = { tag; size = Known size; } in
+      match args with
+      | [] -> true
+      | var :: args ->
+          let field_info : Lambda.field_info = { index = i; block_info; } in
+          let projection = Projection.Field (field_info, Reads_agree, constructed_var) in
+          match Env.find_projection t ~projection with
+          | Some v ->
+              Variable.equal v var && fields_match (i + 1) args constructed_var
+          (* FIXME LG: compare the approxs ?*)
+          | _ -> false
+    in
+    let matching_blocks =
+      Variable.Map.filter (fun var block_key ->
+          shape_match block_key && fields_match 0 args var
+        )
+        t.constructed_blocks
+    in
+    match Variable.Map.choose_opt matching_blocks with
+    | None -> t, None
+    | Some (var, _) -> t, Some var
+    
 end
 
 module A = Simple_value_approx
