@@ -604,37 +604,80 @@ and simplify_set_of_closures original_env r
       ~set_of_closures ~function_decls ~only_for_function_decl:None
       ~freshen:true
   in
+  let rec is_identity ~param (body:Flambda.t) =
+    let module EE = Effect_analysis in
+    let pvar = Parameter.var param in
+    match body with
+    | Var x -> if Variable.compare x pvar = 0 then true else false
+    | Let { defining_expr; body; _} ->
+      if EE.no_effects_named defining_expr then
+        (* TODO: propagate renaming *)
+        is_identity ~param body
+      else false
+    | Let_mutable lm -> is_identity ~param lm.body 
+    (*No side effects as the defining_expr is in a normal let*)
+    | Let_rec (lets, body) ->
+      if List.for_all (fun (_,def) -> EE.no_effects_named def) lets then
+        is_identity ~param body
+      else false
+    | If_then_else (_, branch1, branch2) -> 
+      is_identity ~param branch1 && is_identity ~param branch2
+    | Switch (_, {blocks; _}) ->
+      List.for_all (fun (_, branch) -> is_identity ~param branch) blocks
+    | String_switch (_, blocks, _) -> 
+    (*TODO: check what is 3rd parameter Flambda.t option, does it matter?*)
+      List.for_all (fun (_, branch) -> is_identity ~param branch) blocks
+    | Try_with (branch1, _, branch2) -> (*useless as branch1 won't be identity if it raises smth? *)
+      is_identity ~param branch1 && is_identity ~param branch2
+    | Static_raise _ | Static_catch _ (*TODO*)
+    | Apply _ | Send _ | Assign _ | Proved_unreachable | While _ | For _ -> false
+  in
   let simplify_function fun_var (function_decl : Flambda.function_declaration)
         (funs, used_params, r)
         : Flambda.function_declaration Variable.Map.t * Variable.Set.t * R.t =
-    (*Format.eprintf "simplify_function %a@." Closure_origin.print function_decl.closure_origin;*)
-    let closure_env =
+    let default () =
+      let closure_env =
       Inline_and_simplify_aux.prepare_to_simplify_closure ~function_decl
-        ~free_vars ~specialised_args ~parameter_approximations
-        ~set_of_closures_env
+          ~free_vars ~specialised_args ~parameter_approximations
+          ~set_of_closures_env
+      in
+      let body, r =
+        E.enter_closure closure_env ~closure_id:(Closure_id.wrap fun_var)
+         ~inline_inside:
+            (Inlining_decision.should_inline_inside_declaration function_decl)
+          ~dbg:function_decl.dbg
+          ~f:(fun body_env ->
+            assert (E.inside_set_of_closures_declaration
+              function_decls.set_of_closures_origin body_env);
+            simplify body_env r function_decl.body)
+      in
+      let function_decl =
+        Flambda.create_function_declaration ~params:function_decl.params
+          ~body ~stub:function_decl.stub ~dbg:function_decl.dbg
+          ~inline:function_decl.inline ~specialise:function_decl.specialise
+          ~is_a_functor:function_decl.is_a_functor
+          ~closure_origin:function_decl.closure_origin
+      in
+      let used_params' = Flambda.used_params function_decl in
+      Variable.Map.add fun_var function_decl funs,
+        Variable.Set.union used_params used_params', r
     in
-    let body, r =
-      E.enter_closure closure_env ~closure_id:(Closure_id.wrap fun_var)
-        ~inline_inside:
-          (Inlining_decision.should_inline_inside_declaration function_decl)
-        ~dbg:function_decl.dbg
-        ~f:(fun body_env ->
-          assert (E.inside_set_of_closures_declaration
-            function_decls.set_of_closures_origin body_env);
-          (*simplify body_env r function_decl.body)*)
-          try simplify body_env r function_decl.body
-          with e -> Format.printf "In function %a" Closure_origin.print function_decl.closure_origin; raise e)
-    in
-    let function_decl =
-      Flambda.create_function_declaration ~params:function_decl.params
-        ~body ~stub:function_decl.stub ~dbg:function_decl.dbg
-        ~inline:function_decl.inline ~specialise:function_decl.specialise
-        ~is_a_functor:function_decl.is_a_functor
-        ~closure_origin:function_decl.closure_origin
-    in
-    let used_params' = Flambda.used_params function_decl in
-    Variable.Map.add fun_var function_decl funs,
-      Variable.Set.union used_params used_params', r
+    match function_decl.params with
+    | param::[] -> (* Enable identity optimisation for one param functions *)
+      let closure_env =
+      Inline_and_simplify_aux.prepare_to_simplify_closure ~function_decl
+          ~free_vars ~specialised_args ~parameter_approximations
+          ~set_of_closures_env
+      in (* No need to enter_closure as it disables inlining of self ? *)
+      let env = E.add closure_env fun_var (A.identity_function_approx ()) in
+      let body, r = simplify env r function_decl.body in
+      if is_identity ~param body then
+        let function_decl = A.identity_function_decl () in
+        let used_params' = Flambda.used_params function_decl in
+        Variable.Map.add fun_var function_decl funs,
+        Variable.Set.union used_params used_params', r
+      else default ()
+    | _ -> default ()
   in
   let funs, _used_params, r =
     Variable.Map.fold simplify_function function_decls.funs
