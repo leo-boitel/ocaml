@@ -605,6 +605,7 @@ and simplify_set_of_closures original_env r
       ~freshen:true
   in
   let rec is_identity ~param (body:Flambda.t) =
+    (*Format.eprintf "%a@." Flambda.print body;*)
     let module EE = Effect_analysis in
     let pvar = Parameter.var param in
     match body with
@@ -622,13 +623,20 @@ and simplify_set_of_closures original_env r
       else false
     | If_then_else (_, branch1, branch2) -> 
       is_identity ~param branch1 && is_identity ~param branch2
-    | Switch (_, {blocks; _}) ->
-      List.for_all (fun (_, branch) -> is_identity ~param branch) blocks
-    | String_switch (_, blocks, _) -> 
-    (*TODO: check what is 3rd parameter Flambda.t option, does it matter?*)
-      List.for_all (fun (_, branch) -> is_identity ~param branch) blocks
-    | Try_with (branch1, _, branch2) -> (*useless as branch1 won't be identity if it raises smth? *)
-      is_identity ~param branch1 && is_identity ~param branch2
+    | Switch (_, {consts;blocks; failaction; _}) ->
+      let check = (fun (_, branch) -> is_identity ~param branch) in
+      List.for_all check blocks && List.for_all check consts && 
+      begin match failaction with
+      | None -> true
+      | Some failaction -> is_identity ~param failaction
+      end
+    | String_switch (_, blocks, failaction) -> 
+      List.for_all (fun (_, branch) -> is_identity ~param branch) blocks && 
+      begin match failaction with
+      | None -> true
+      | Some failaction -> is_identity ~param failaction
+      end
+    | Try_with _
     | Static_raise _ | Static_catch _ (*TODO*)
     | Apply _ | Send _ | Assign _ | Proved_unreachable | While _ | For _ -> false
   in
@@ -669,12 +677,22 @@ and simplify_set_of_closures original_env r
     in
     match function_decl.params with
     | param::[] -> (* Enable identity optimisation for one param functions *)
-      let function_decl = gen_function_decl (Var (Parameter.var param)) in
-      let env = E.add closure_env fun_var (A.identity_function_approx function_decl) in
+      let env = E.add closure_env fun_var (A.identity_function_approx ()) in
+      let module Backend = (val E.backend env) in
+      let symbol = Backend.closure_symbol (Closure_id.wrap fun_var) in
+      (* Approx for static version of the function if it exists *)
+      let env = 
+        begin match E.find_symbol_opt env symbol with
+        | None -> E.add_symbol env symbol (A.identity_function_approx ()) 
+        | Some _ -> E.redefine_symbol env symbol (A.identity_function_approx ()) 
+        end
+      in
+     (* Format.eprintf "Calling gen_body on %a@." Flambda.print function_decl.body; *)
       let body, r = gen_body env r in
-      if is_identity ~param body then
-       (* let function_decl = A.identity_function_decl (Parameter.var param) in*)
-        return function_decl r
+      if is_identity ~param body then begin
+        let function_decl = gen_function_decl (Var (Parameter.var param)) in
+        Format.eprintf "Triggered on %a : %a@." Variable.print fun_var Flambda.print body;
+        return function_decl r end
       else default ()
     | _ -> default ()
   in
