@@ -669,12 +669,11 @@ and simplify_set_of_closures original_env r
     in
     match function_decl.params with
     | param::[] -> (* Enable identity optimisation for one param functions *)
-      let env = E.add closure_env fun_var (A.identity_function_approx (Parameter.var param)) in
+      let function_decl = gen_function_decl (Var (Parameter.var param)) in
+      let env = E.add closure_env fun_var (A.identity_function_approx function_decl) in
       let body, r = gen_body env r in
       if is_identity ~param body then
        (* let function_decl = A.identity_function_decl (Parameter.var param) in*)
-        let body : Flambda.t = Var (Parameter.var param) in
-        let function_decl = gen_function_decl body in
         return function_decl r
       else default ()
     | _ -> default ()
