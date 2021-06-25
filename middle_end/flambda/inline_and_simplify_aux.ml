@@ -27,11 +27,6 @@ module Env = struct
     (* When out of mutable indexes, can be converted to an immutable switch_block_key *)
   }
 
-  type projection_info = {
-    index : int; (* We could not store the index and check if it is correct when using it to save space *)
-    block_var : Variable.t
-  }
-
   type t = {
     backend : (module Backend_intf.S);
     round : int;
@@ -60,7 +55,7 @@ module Env = struct
     (* immutable blocks that we shouldn't need to allocate again *)
     partial_blocks : partial_switch_block_key Variable.Map.t;
     (* blocks that are not proven yet to be immutable because we didn't see all their Pfield *)
-    immutable_projections : projection_info Variable.Map.t;
+    immutable_projections : Variable.t Projection.Map.t;
   }
 
   let create ~never_inline ~backend ~round ~ppf_dump =
@@ -87,7 +82,7 @@ module Env = struct
       inlined_debuginfo = Debuginfo.none;
       constructed_blocks = Variable.Map.empty;
       partial_blocks = Variable.Map.empty;
-      immutable_projections = Variable.Map.empty;
+      immutable_projections = Projection.Map.empty;
     }
 
   let backend t = t.backend
@@ -219,9 +214,8 @@ module Env = struct
       let block_info = field.block_info in
         begin match sem, block_info.size with
         | Reads_agree, Known size ->
-            let projection_info = { index = field.index; block_var = var } in
             let t = { t with immutable_projections =
-              Variable.Map.add bound_to projection_info t.immutable_projections;
+              Projection.Map.add projection bound_to t.immutable_projections;
             } in
             begin match Variable.Map.find_opt var t.partial_blocks with
             | Some block -> update_partial_block t block block_info.tag size field.index var
@@ -486,36 +480,48 @@ module Env = struct
   let is_constructed_block t var =
     Variable.Map.mem var t.constructed_blocks
 
+  let matching_approx t v1 v2 = 
+    let approx_v1 = Variable.Map.find_opt v1 t.approx in
+    let approx_v2 = Variable.Map.find_opt v2 t.approx in
+    match approx_v1, approx_v2 with
+    | Some (_,av1), Some (_,av2) ->
+      let value_v1 = Simple_value_approx.simplify_var av1 in
+      let value_v2 = Simple_value_approx.simplify_var av2 in
+      begin match value_v1, value_v2 with
+      | Some (named_v1,_), Some(named_v2,_) ->
+        Flambda_utils.same_named named_v1 named_v2
+      | None, _ | _, None -> false
+      end
+    | None, _ | _, None -> false
+
   let find_constructed_block t ~tag args =
     let size = List.length args in
     let shape_match block_key =
       block_key.Flambda.size = size && block_key.Flambda.tag = tag
     in
-    (* TODO - empty block opti? or is it done by default?*)
-    let rec check_block i args ~acc_var =
+    let rec fields_match i args constructed_var =
+      let block_info : Lambda.block_info = { tag; size = Known size; } in
       match args with
-      | [] -> acc_var
+      | [] -> true
       | var :: args ->
-        begin match Variable.Map.find_opt var t.immutable_projections with
-        | Some p ->
-          if p.index <> i then None
-          else begin match acc_var with
-          | Some acc ->
-            if Variable.compare acc p.block_var <> 0 then None
-            else check_block (i+1) args ~acc_var
-          | None ->
-            begin match Variable.Map.find_opt p.block_var t.constructed_blocks with
-            | Some block_key -> 
-              if shape_match block_key then 
-                check_block (i+1) args ~acc_var:(Some p.block_var)
-              else None
-            | None -> None
-            end
-          end
-        | None -> None
-        end
+        let field_info : Lambda.field_info = { index = i; block_info; } in
+        let projection = Projection.Field (field_info, Reads_agree, constructed_var) in
+        match Projection.Map.find_opt projection t.immutable_projections with
+        | Some v ->
+            if Variable.equal v var || matching_approx t v var then
+              fields_match (i + 1) args constructed_var
+            else false
+        | _ -> false
     in
-    check_block 0 args ~acc_var:None
+    let matching_blocks =
+      Variable.Map.filter (fun var block_key ->
+          shape_match block_key && fields_match 0 args var
+        )
+        t.constructed_blocks
+    in
+    match Variable.Map.choose_opt matching_blocks with
+    | None -> None
+    | Some (var, _) -> Some var
 end
 
 let initial_inlining_threshold ~round : Inlining_cost.Threshold.t =

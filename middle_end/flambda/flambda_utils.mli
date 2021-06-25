@@ -220,3 +220,5 @@ val parameters_specialised_to_the_same_variable
   -> specialised_to_same_as list Variable.Map.t
 
 val same_field_info : Lambda.field_info -> Lambda.field_info -> bool
+
+val same_named : Flambda.named -> Flambda.named -> bool
