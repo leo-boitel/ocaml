@@ -55,7 +55,7 @@ module Env = struct
     (* immutable blocks that we shouldn't need to allocate again *)
     partial_blocks : partial_switch_block_key Variable.Map.t;
     (* blocks that are not proven yet to be immutable because we didn't see all their Pfield *)
-    immutable_projections : Variable.t Projection.Map.t;
+    immutable_projections : (Variable.t list) Projection.Map.t;
   }
 
   let create ~never_inline ~backend ~round ~ppf_dump =
@@ -214,9 +214,16 @@ module Env = struct
       let block_info = field.block_info in
         begin match sem, block_info.size with
         | Reads_agree, Known size ->
-            let t = { t with immutable_projections =
-              Projection.Map.add projection bound_to t.immutable_projections;
-            } in
+            let t = 
+              { t with immutable_projections =
+                begin match Projection.Map.find_opt projection t.immutable_projections with
+                | Some projs -> 
+                  Projection.Map.add projection (bound_to::projs) t.immutable_projections;
+                | None -> 
+                  Projection.Map.add projection [bound_to] t.immutable_projections;
+                end
+              } 
+            in
             begin match Variable.Map.find_opt var t.partial_blocks with
             | Some block -> update_partial_block t block block_info.tag size field.index var
             | None -> add_partial_block t block_info.tag size field.index var
@@ -507,10 +514,11 @@ module Env = struct
         let field_info : Lambda.field_info = { index = i; block_info; } in
         let projection = Projection.Field (field_info, Reads_agree, constructed_var) in
         match Projection.Map.find_opt projection t.immutable_projections with
-        | Some v ->
-            if Variable.equal v var || matching_approx t v var then
-              fields_match (i + 1) args constructed_var
-            else false
+        | Some vlist -> (*vlist is all the known vars to match the projection*)
+          let equivalent v = Variable.equal v var || matching_approx t v var in
+          if List.exists equivalent vlist then
+            fields_match (i + 1) args constructed_var
+          else false
         | _ -> false
     in
     let matching_blocks =
