@@ -488,10 +488,13 @@ module Env = struct
     Variable.Map.mem var t.constructed_blocks
 
   let matching_approx t v1 v2 = 
+    Format.eprintf "Trying to match approxes of %a and %a@." Variable.print v1 Variable.print v2;
     let approx_v1 = Variable.Map.find_opt v1 t.approx in
     let approx_v2 = Variable.Map.find_opt v2 t.approx in
     match approx_v1, approx_v2 with
     | Some (_,av1), Some (_,av2) ->
+      Format.eprintf "Found approxes %a and %a@." Simple_value_approx.print av1 
+        Simple_value_approx.print av2;
       let value_v1 = Simple_value_approx.simplify_var av1 in
       let value_v2 = Simple_value_approx.simplify_var av2 in
       begin match value_v1, value_v2 with
