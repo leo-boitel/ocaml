@@ -604,37 +604,51 @@ and simplify_set_of_closures original_env r
       ~set_of_closures ~function_decls ~only_for_function_decl:None
       ~freshen:true
   in
-  let rec is_identity ~param (body:Flambda.t) =
-    (*Format.eprintf "%a@." Flambda.print body;*)
+  let rec is_identity ~param ?(consts=[])
+      (body:Flambda.t) =
     let module EE = Effect_analysis in
-    let pvar = Parameter.var param in
+    let add x lst = if List.mem x lst then lst else x::lst in
+    let same x = Variable.compare x (Parameter.var param) = 0 in
     match body with
-    | Var x -> if Variable.compare x pvar = 0 then true else false
+    | Var x -> same x
+    | Let  {var; defining_expr = Const c; body = Var var2; _} when
+          Variable.compare var var2 = 0 && List.mem c consts
+       -> true (* Known constant *)
     | Let { defining_expr; body; _} ->
       if EE.no_effects_named defining_expr then
-        (* TODO: propagate renaming *)
-        is_identity ~param body
+       is_identity ~param ~consts body
       else false
-    | Let_mutable lm -> is_identity ~param lm.body 
+    | Let_mutable lm -> is_identity ~param ~consts lm.body 
     (*No side effects as the defining_expr is in a normal let*)
     | Let_rec (lets, body) ->
       if List.for_all (fun (_,def) -> EE.no_effects_named def) lets then
-        is_identity ~param body
+        is_identity ~param ~consts body
       else false
-    | If_then_else (_, branch1, branch2) -> 
-      is_identity ~param branch1 && is_identity ~param branch2
-    | Switch (_, {consts;blocks; failaction; _}) ->
-      let check = (fun (_, branch) -> is_identity ~param branch) in
-      List.for_all check blocks && List.for_all check consts && 
+    | If_then_else (var, branch1, branch2) ->
+      (if same var then (* Todo: propagate more for the whens?*)
+        let consts = add (Flambda.Int 0) consts in
+        is_identity ~param ~consts branch2
+      else is_identity ~param ~consts branch2) &&
+      is_identity ~param ~consts branch1
+    | Switch (var, {consts = const_blocks;blocks; failaction; _}) ->
+      let check_block = (fun (_, branch) -> is_identity ~param ~consts branch) in
+      let check_const =
+        if same var then (*switching on the argument*)
+          fun (i,branch) ->
+            let consts = add (Flambda.Int i) consts in
+            is_identity ~param ~consts branch
+        else check_block
+      in
+      List.for_all check_block blocks && List.for_all check_const const_blocks && 
       begin match failaction with
       | None -> true
-      | Some failaction -> is_identity ~param failaction
+      | Some failaction -> is_identity ~param ~consts failaction
       end
     | String_switch (_, blocks, failaction) -> 
-      List.for_all (fun (_, branch) -> is_identity ~param branch) blocks && 
+      List.for_all (fun (_, branch) -> is_identity ~param ~consts branch) blocks && 
       begin match failaction with
       | None -> true
-      | Some failaction -> is_identity ~param failaction
+      | Some failaction -> is_identity ~param ~consts failaction
       end
     | Try_with _
     | Static_raise _ | Static_catch _ (*TODO*)
