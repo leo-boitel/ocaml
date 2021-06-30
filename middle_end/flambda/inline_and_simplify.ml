@@ -604,51 +604,63 @@ and simplify_set_of_closures original_env r
       ~set_of_closures ~function_decls ~only_for_function_decl:None
       ~freshen:true
   in
-  let rec is_identity ~param ?(consts=[])
+  let rec is_identity ~params ?(consts=[])
       (body:Flambda.t) =
     let module EE = Effect_analysis in
+    let pvars = List.map Parameter.var params in
+    let compare x = 
+      List.exists (fun pvar ->
+          if Variable.compare x pvar = 0 then true else false)
+        pvars
+    in
     let add x lst = if List.mem x lst then lst else x::lst in
-    let same x = Variable.compare x (Parameter.var param) = 0 in
     match body with
-    | Var x -> same x
+    | Var x -> compare x
     | Let  {var; defining_expr = Const c; body = Var var2; _} when
           Variable.compare var var2 = 0 && List.mem c consts
        -> true (* Known constant *)
-    | Let { defining_expr; body; _} ->
+    | Let { var; defining_expr; body; _} ->
       if EE.no_effects_named defining_expr then
-       is_identity ~param ~consts body
+        let params = (* Renaming - not necessary? *)
+          if compare var then
+            begin match defining_expr with
+            | Expr (Var v2) -> add (Parameter.wrap v2) params
+            | _ -> params
+            end
+          else params
+        in is_identity ~params ~consts body
       else false
-    | Let_mutable lm -> is_identity ~param ~consts lm.body 
+    | Let_mutable lm -> is_identity ~params ~consts lm.body 
     (*No side effects as the defining_expr is in a normal let*)
     | Let_rec (lets, body) ->
       if List.for_all (fun (_,def) -> EE.no_effects_named def) lets then
-        is_identity ~param ~consts body
+        is_identity ~params ~consts body
       else false
     | If_then_else (var, branch1, branch2) ->
-      (if same var then (* Todo: propagate more for the whens?*)
+      (if compare var then (* Todo: propagate more for the whens?*)
         let consts = add (Flambda.Int 0) consts in
-        is_identity ~param ~consts branch2
-      else is_identity ~param ~consts branch2) &&
-      is_identity ~param ~consts branch1
+        is_identity ~params ~consts branch2
+      else is_identity ~params ~consts branch2) &&
+      is_identity ~params ~consts branch1
     | Switch (var, {consts = const_blocks;blocks; failaction; _}) ->
-      let check_block = (fun (_, branch) -> is_identity ~param ~consts branch) in
+      let check_block = (fun (_, branch) -> is_identity ~params ~consts branch) in
       let check_const =
-        if same var then (*switching on the argument*)
+        if compare var then (*switching on the argument*)
           fun (i,branch) ->
             let consts = add (Flambda.Int i) consts in
-            is_identity ~param ~consts branch
+            is_identity ~params ~consts branch
         else check_block
       in
       List.for_all check_block blocks && List.for_all check_const const_blocks && 
       begin match failaction with
       | None -> true
-      | Some failaction -> is_identity ~param ~consts failaction
+      | Some failaction -> is_identity ~params ~consts failaction
       end
     | String_switch (_, blocks, failaction) -> 
-      List.for_all (fun (_, branch) -> is_identity ~param ~consts branch) blocks && 
+      List.for_all (fun (_, branch) -> is_identity ~params ~consts branch) blocks && 
       begin match failaction with
       | None -> true
-      | Some failaction -> is_identity ~param ~consts failaction
+      | Some failaction -> is_identity ~params ~consts failaction
       end
     | Try_with _
     | Static_raise _ | Static_catch _ (*TODO*)
@@ -703,7 +715,8 @@ and simplify_set_of_closures original_env r
       in
      (* Format.eprintf "Calling gen_body on %a@." Flambda.print function_decl.body; *)
       let body, r = gen_body env r in
-      if is_identity ~param body then begin
+      let params = [param] in
+      if is_identity ~params body then begin
         let function_decl = gen_function_decl (Var (Parameter.var param)) in
         Format.eprintf "Triggered on %a : %a@." Variable.print fun_var Flambda.print body;
         return function_decl r end
