@@ -691,17 +691,9 @@ and simplify_set_of_closures original_env r
     in
     match function_decl.params with
     | param::[] -> (* Enable identity optimisation for one param functions *)
-      let env = E.add closure_env fun_var (A.identity_function_approx ()) in
       let module Backend = (val E.backend env) in
-      let symbol = Backend.closure_symbol (Closure_id.wrap fun_var) in
-      (* Approx for static version of the function if it exists *)
-      let env = 
-        begin match E.find_symbol_opt env symbol with
-        | None -> E.add_symbol env symbol (A.identity_function_approx ()) 
-        | Some _ -> E.redefine_symbol env symbol (A.identity_function_approx ()) 
-        end
-      in
-     (* Format.eprintf "Calling gen_body on %a@." Flambda.print function_decl.body; *)
+      let fun_sym = Backend.closure_symbol (Closure_id.wrap fun_var) in
+      let env = E.set_identity_proof env fun_var fun_sym (Parameter.var param) in
       let body, r = gen_body env r in
       if is_identity ~param body then begin
         let function_decl = gen_function_decl (Var (Parameter.var param)) in
@@ -765,6 +757,7 @@ and simplify_apply env r ~(apply : Flambda.apply) : Flambda.t * R.t =
     Flambda. func = lhs_of_application; args; kind = _; dbg;
     inline = inline_requested; specialise = specialise_requested;
   } = apply in
+  let default () =
   let dbg = E.add_inlined_debuginfo env ~dbg in
   simplify_free_variable env lhs_of_application
     ~f:(fun env lhs_of_application lhs_of_application_approx ->
@@ -860,6 +853,22 @@ and simplify_apply env r ~(apply : Flambda.apply) : Flambda.t * R.t =
           Apply ({ func = lhs_of_application; args; kind = Indirect; dbg;
               inline = inline_requested; specialise = specialise_requested; }),
             ret r (A.value_unknown Other)))
+  in
+  let is_projection big small =
+    match (*TODO, use immutable_projections*)
+  in
+  match env.identity_proof with
+  | None -> default ()
+  | Some idp ->
+    if List.mem lhs_of_application idp.id_vars then
+      begin match args with
+      | param::[] ->
+        if is_projection idp.arg (Parameter.var param) then
+        (* replace by id and recall simplify_apply for clean exit? or understand ret*)
+        else default ()
+        | _ -> assert false (*TODO error msg*)
+      end
+    else default ()
 
 and simplify_full_application env r ~function_decls ~lhs_of_application
       ~closure_id_being_applied ~function_decl ~value_set_of_closures ~args

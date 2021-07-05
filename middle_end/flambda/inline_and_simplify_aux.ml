@@ -31,6 +31,12 @@ module Env = struct
     index : int; (* We could not store the index and check if it is correct when using it to save space *)
     block_var : Variable.t
   }
+  
+  type identity_proof = {
+    id_var : Variable.t;
+    id_sym : Symbol.t;
+    arg : Variable.t;
+  }
 
   type t = {
     backend : (module Backend_intf.S);
@@ -61,6 +67,8 @@ module Env = struct
     partial_blocks : partial_switch_block_key Variable.Map.t;
     (* blocks that are not proven yet to be immutable because we didn't see all their Pfield *)
     immutable_projections : projection_info Variable.Map.t;
+    (* Exists if we are trying to prove the current func is an identity *)
+    identity_proof : identity_proof option;
   }
 
   let create ~never_inline ~backend ~round ~ppf_dump =
@@ -88,6 +96,7 @@ module Env = struct
       constructed_blocks = Variable.Map.empty;
       partial_blocks = Variable.Map.empty;
       immutable_projections = Variable.Map.empty;
+      identity_proof = None;
     }
 
   let backend t = t.backend
@@ -516,6 +525,23 @@ module Env = struct
         end
     in
     check_block 0 args ~acc_var:None
+    
+  let set_identity_proof t id_vars id_sym arg =
+    let id_proof = { id_vars; id_sym; arg} in
+    { t with identity_proof = Some id_proof }
+    
+  let add_identity_alias t alias =
+    match t with
+    | None -> assert false (*TODO error msg*)
+    | Some id_proof ->
+      { t with identity_proof = Some
+        { id_proof with id_vars =
+          alias::id_proof.id_vars
+        }
+      }
+   
+  let get_identity_proof t =
+    t.identity_proof
 end
 
 let initial_inlining_threshold ~round : Inlining_cost.Threshold.t =

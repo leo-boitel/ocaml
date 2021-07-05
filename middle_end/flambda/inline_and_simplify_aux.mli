@@ -285,6 +285,21 @@ module Env : sig
       the given tag and arguments *)
   val find_constructed_block :
     t -> tag:int -> Variable.t list -> Variable.t option
+    
+  type identity_proof = {
+    id_vars : Variable.t list;
+    id_sym : Symbol.t;
+    arg : Variable.t;
+  }
+  
+  val set_identity_proof :
+    t -> Variable.t -> Symbol.t -> Variable.t list -> t
+   
+  val add_identity_alias :
+    t -> Variable.t -> t
+  
+  val get_identity_proof :
+    t -> identity_proof option
 
 end
 
