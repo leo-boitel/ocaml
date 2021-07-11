@@ -693,7 +693,7 @@ and simplify_set_of_closures original_env r
     | param::[] -> (* Enable identity optimisation for one param functions *)
       let module Backend = (val E.backend env) in
       let fun_sym = Backend.closure_symbol (Closure_id.wrap fun_var) in
-      let env = E.set_identity_proof env fun_var fun_sym (Parameter.var param) in
+      let env = E.set_identity_proof env [fun_var] fun_sym (Parameter.var param) in
       let body, r = gen_body env r in
       if is_identity ~param body then begin
         let function_decl = gen_function_decl (Var (Parameter.var param)) in
@@ -854,17 +854,21 @@ and simplify_apply env r ~(apply : Flambda.apply) : Flambda.t * R.t =
               inline = inline_requested; specialise = specialise_requested; }),
             ret r (A.value_unknown Other)))
   in
-  let is_projection big small =
-    match (*TODO, use immutable_projections*)
+  let rec is_projection big small =
+    match E.find_proj_info env small with
+    | None -> false
+    | Some { block_var; _} -> 
+      if Variable.compare big block_var = 0 then true
+      else is_projection big block_var
   in
-  match env.identity_proof with
+  match E.get_identity_proof env with
   | None -> default ()
   | Some idp ->
     if List.mem lhs_of_application idp.id_vars then
       begin match args with
       | param::[] ->
-        if is_projection idp.arg (Parameter.var param) then
-        (* replace by id and recall simplify_apply for clean exit? or understand ret*)
+        if is_projection idp.arg param then
+        Var param, r (*Ok to just propagate r?*)
         else default ()
         | _ -> assert false (*TODO error msg*)
       end

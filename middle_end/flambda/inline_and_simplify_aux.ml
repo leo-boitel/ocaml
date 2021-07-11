@@ -33,7 +33,7 @@ module Env = struct
   }
   
   type identity_proof = {
-    id_var : Variable.t;
+    id_vars : Variable.t list;
     id_sym : Symbol.t;
     arg : Variable.t;
   }
@@ -531,7 +531,7 @@ module Env = struct
     { t with identity_proof = Some id_proof }
     
   let add_identity_alias t alias =
-    match t with
+    match t.identity_proof with
     | None -> assert false (*TODO error msg*)
     | Some id_proof ->
       { t with identity_proof = Some
@@ -542,6 +542,9 @@ module Env = struct
    
   let get_identity_proof t =
     t.identity_proof
+    
+  let find_proj_info t var =
+    Variable.Map.find_opt var t.immutable_projections
 end
 
 let initial_inlining_threshold ~round : Inlining_cost.Threshold.t =

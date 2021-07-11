@@ -292,14 +292,22 @@ module Env : sig
     arg : Variable.t;
   }
   
+  type projection_info = {
+    index : int;
+    block_var : Variable.t
+  }
+  
   val set_identity_proof :
-    t -> Variable.t -> Symbol.t -> Variable.t list -> t
+    t -> Variable.t list -> Symbol.t -> Variable.t -> t
    
   val add_identity_alias :
     t -> Variable.t -> t
   
   val get_identity_proof :
     t -> identity_proof option
+    
+  val find_proj_info :
+    t -> Variable.t -> projection_info option
 
 end
 
